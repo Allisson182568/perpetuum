@@ -1,0 +1,22 @@
+
+[functions.update-dividends-yahoo]
+enabled = true
+verify_jwt = true
+import_map = "./functions/update-dividends-yahoo/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/update-dividends-yahoo/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/update-dividends-yahoo/*.html" ]
+
+[functions.predict-dividends]
+enabled = true
+verify_jwt = true
+import_map = "./functions/predict-dividends/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/predict-dividends/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/predict-dividends/*.html" ]
