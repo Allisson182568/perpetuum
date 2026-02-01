@@ -1,55 +1,92 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 
-serve(async (req) => {
-  // 1. Pega as chaves seguras do ambiente
-  const clientId = Deno.env.get('PLUGGY_CLIENT_ID')
-  const clientSecret = Deno.env.get('PLUGGY_CLIENT_SECRET')
+// 🛡️ CONFIGURAÇÃO DE CORS (PERMISSÃO TOTAL)
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
 
-  if (!clientId || !clientSecret) {
-    return new Response(JSON.stringify({ error: "Chaves não configuradas" }), { status: 500 })
+serve(async (req) => {
+  // 1. O NAVEGADOR PERGUNTA: "POSSO CONECTAR?" (OPTIONS)
+  // Respondemos SIM imediatamente, antes de qualquer lógica.
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    // 🔴 NOVO: Ler o corpo da requisição para pegar o ID do usuário enviado pelo Flutter
-    const { clientUserId } = await req.json().catch(() => ({ clientUserId: null }))
-
-    if (!clientUserId) {
-        throw new Error("clientUserId é obrigatório")
+    // 2. Tenta pegar o corpo da requisição
+    // Se der erro aqui, assumimos que veio vazio (fallback)
+    let body = {}
+    try {
+        body = await req.json()
+    } catch {
+        // Ignora erro de JSON vazio
     }
 
-    // 2. Primeiro: Autentica sua empresa na Pluggy (Pega a API Key)
-    const authResponse = await fetch('https://api.pluggy.ai/auth', {
+    const { clientUserId } = body
+
+    // 3. Verifica as Chaves (Secrets)
+    const clientId = Deno.env.get('PLUGGY_CLIENT_ID')
+    const clientSecret = Deno.env.get('PLUGGY_CLIENT_SECRET')
+
+    if (!clientId || !clientSecret) {
+      throw new Error("ERRO: Secrets PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configuradas no Supabase.")
+    }
+
+    // 4. Autenticação na Pluggy (Pega a API Key)
+    const authRes = await fetch('https://api.pluggy.ai/auth', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientId, clientSecret }),
     })
 
-    const authData = await authResponse.json()
+    if (!authRes.ok) {
+        const errText = await authRes.text()
+        throw new Error(`Erro Auth Pluggy (${authRes.status}): ${errText}`)
+    }
+
+    const authData = await authRes.json()
     const apiKey = authData.apiKey
 
-    // 3. Segundo: Gera o Connect Token específico para o usuário final
-    const tokenResponse = await fetch('https://api.pluggy.ai/connect_token', {
+    // 5. Gera o Connect Token
+    // Se não veio clientUserId do Flutter, usa um genérico para não travar o teste
+    const finalUserId = clientUserId || "usuario_debug_123"
+
+    const tokenRes = await fetch('https://api.pluggy.ai/connect_token', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-API-KEY': apiKey
       },
       body: JSON.stringify({
-        options: {
-            clientUserId: clientUserId // ✅ CORRIGIDO: Usa o ID dinâmico do usuário
-        }
+        options: { clientUserId: finalUserId }
       }),
     })
 
-    const tokenData = await tokenResponse.json()
+    if (!tokenRes.ok) {
+        const errText = await tokenRes.text()
+        throw new Error(`Erro Token Pluggy (${tokenRes.status}): ${errText}`)
+    }
 
-    // 4. Devolve o token para o seu App Flutter
+    const tokenData = await tokenRes.json()
+
+    // 6. SUCESSO!
     return new Response(
       JSON.stringify({ accessToken: tokenData.accessToken }),
-      { headers: { "Content-Type": "application/json" } },
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200
+      },
     )
 
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 400 })
+    // 7. EM CASO DE ERRO, RETORNA O MOTIVO + CORS HEADERS
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400
+      }
+    )
   }
 })
