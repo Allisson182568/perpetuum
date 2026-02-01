@@ -46,8 +46,11 @@ class _HomeScreenState extends State<HomeScreen>
   final CloudService _cloud = CloudService();
   final DividendService _dividendService = DividendService();
 
+  // 1. Variável para guardar os dados da B3
+  List<dynamic> _meusInvestimentos = [];
+  bool _isLoading = false;
+
   bool _isLocaleReady = false;
-  bool _isLoading = true;
 
   // Financial Data
   double _totalPatrimony = 0.0;
