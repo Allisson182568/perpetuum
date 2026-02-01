@@ -9,220 +9,166 @@ import 'import_strategy.dart';
 class IrpfStrategy implements ImportStrategy {
   @override
   String get title => "Importar Declaração IRPF";
-
   @override
-  String get description =>
-      "PDF completo.\nExtração inteligente com heurística (BR / Exterior).";
-
+  String get description => "Leitura de Precisão: Layout Tabular 2025 (Bens e Rendimentos).";
   @override
   List<String> get allowedExtensions => ['pdf'];
-
   @override
   IconData get icon => Icons.picture_as_pdf_rounded;
 
   @override
-  Future<List<ImportResult>> parse(
-      PlatformFile file, Uint8List bytes) async {
+  Future<List<ImportResult>> parse(PlatformFile file, Uint8List bytes) async {
     PdfDocument? document;
-
     try {
-      if (file.path != null) {
-        document =
-            PdfDocument(inputBytes: await File(file.path!).readAsBytes());
-      } else {
-        document = PdfDocument(inputBytes: bytes);
-      }
+      document = file.path != null
+          ? PdfDocument(inputBytes: await File(file.path!).readAsBytes())
+          : PdfDocument(inputBytes: bytes);
 
-      final extractor = PdfTextExtractor(document);
-      final rawText = extractor.extractText();
+      // Usamos uma extração que mantém o layout para não misturar as colunas de valores
+      String rawText = PdfTextExtractor(document).extractText();
+      List<String> lines = rawText.split('\n');
 
-      final cleanText = rawText
-          .replaceAll('\n', ' ')
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .toUpperCase();
+      List<ImportResult> results = [];
 
-      if (!cleanText.contains("BENS E DIREITOS")) {
-        throw Exception("Seção BENS E DIREITOS não encontrada");
-      }
+      bool inBensSection = false;
+      bool inRendimentosSection = false;
 
-      String section = cleanText.split("BENS E DIREITOS")[1];
+      for (int i = 0; i < lines.length; i++) {
+        String line = lines[i].toUpperCase().trim();
 
-      if (section.contains("DÍVIDAS E ÔNUS")) {
-        section = section.split("DÍVIDAS E ÔNUS")[0];
-      }
+        // --- DETECÇÃO DE SEÇÃO ---
+        if (line.contains("DECLARAÇÃO DE BENS E DIREITOS")) {
+          inBensSection = true;
+          inRendimentosSection = false;
+          continue;
+        }
+        if (line.contains("RENDIMENTOS ISENTOS E NÃO TRIBUTÁVEIS")) {
+          inRendimentosSection = true;
+          inBensSection = false;
+          continue;
+        }
+        // Para se mudar de seção principal
+        if (line.contains("DÍVIDAS E ÔNUS") || line.contains("RESUMO DA DECLARAÇÃO")) {
+          inBensSection = false;
+          inRendimentosSection = false;
+        }
 
-      final itemSplitter = RegExp(r'(\d{2}\s?-\s?)');
-      final blocks = section.split(itemSplitter);
-      final codes = itemSplitter
-          .allMatches(section)
-          .map((m) =>
-          m.group(0)!.replaceAll(RegExp(r'[^0-9]'), ''))
-          .toList();
+        // --- LÓGICA PARA BENS E DIREITOS (Páginas 5 e 6 do seu print) ---
+        if (inBensSection) {
+          // Detecta o início de um bloco de bem (Ex: 228 01 16)
+          // O Regex procura: Item(3 dígitos) Grupo(2 dígitos) Código(2 dígitos)
+          final assetStart = RegExp(r'^(\d{3})\s+(\d{2})\s+(\d{2})');
+          if (assetStart.hasMatch(line)) {
+            final match = assetStart.firstMatch(line)!;
+            String code = match.group(3)!;
 
-      if (blocks.isNotEmpty) {
-        blocks.removeAt(0);
-      }
+            // A descrição costuma estar na mesma linha ou nas seguintes
+            // Vamos pegar as próximas 3 linhas para garantir que pegamos o Ticker/CNPJ
+            String fullDesc = line;
+            for (int j = 1; j <= 4 && (i + j) < lines.length; j++) {
+              fullDesc += " " + lines[i+j].toUpperCase().trim();
+            }
 
-      final List<ImportResult> results = [];
+            // O valor de 2024 é sempre o ÚLTIMO valor da linha ou bloco
+            // Procuramos por valores no formato 0.000,00
+            final valueMatches = RegExp(r'(\d{1,3}(?:\.\d{3})*,\d{2})').allMatches(fullDesc).toList();
 
-      for (int i = 0; i < blocks.length; i++) {
-        final block = blocks[i];
-        final code = codes[i];
+            if (valueMatches.isNotEmpty) {
+              double val2024 = _parseMoney(valueMatches.last.group(1)!);
 
-        if (!_isValidCode(code)) continue;
+              if (val2024 > 0) {
+                String ticker = _extractTicker(fullDesc);
+                String cnpj = _extractCNPJ(fullDesc);
+                double qty = _extractQty(fullDesc);
 
-        final values =
-        RegExp(r'R\$\s?([\d\.,]+)').allMatches(block).toList();
+                results.add(ImportResult(
+                    ticker: ticker == "OUTROS" ? _generateSlug(fullDesc) : ticker,
+                    qty: qty > 0 ? qty : 1.0,
+                    price: qty > 0 ? val2024 / qty : val2024,
+                    assetType: _mapCodeToType(code),
+                    type: 'C',
+                    date: "31/12/2024",
+                    broker: "IRPF 2025",
+                    cnpj: cnpj,
+                    isEarning: false,
+                    enrichment: {'location': _inferLocation(fullDesc), 'ir_code': code}
+                ));
+              }
+            }
+          }
+        }
 
-        if (values.isEmpty) continue;
+        // --- LÓGICA PARA RENDIMENTOS (Página 1 do seu print) ---
+        if (inRendimentosSection) {
+          // Busca linhas com CNPJ + Nome + Valor (Final da linha)
+          final earningMatch = RegExp(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})\s+(.*?)\s+(\d{1,3}(?:\.\d{3})*,\d{2})$')
+              .firstMatch(line);
 
-        final totalValue = _parseMoney(values.last.group(1)!);
-        if (totalValue <= 0) continue;
-
-        final ticker = _extractTicker(block);
-        final qty = _extractQty(block);
-        final cnpj = _extractCNPJ(block);
-
-        final location = _inferLocation(block);
-        final confidence = _calculateConfidence(
-          hasTicker: ticker != "OUTROS",
-          hasQty: qty > 0,
-          hasCnpj: cnpj.isNotEmpty,
-          hasValue: totalValue > 0,
-          validCode: true,
-        );
-
-        results.add(
-          ImportResult(
-            ticker:
-            ticker == "OUTROS" ? _generateSlug(block) : ticker,
-            qty: qty > 0 ? qty : 1.0,
-            price: qty > 0 ? totalValue / qty : totalValue,
-            assetType: _mapCodeToType(code),
-            type: 'C',
-            date: DateFormat('dd/MM/yyyy')
-                .format(DateTime.now()),
-            broker: "IRPF Importado",
-            cnpj: cnpj,
-            isEarning: false,
-            enrichment: {
-              'original_desc': block.trim(),
-              'location': location,
-              'confidence': confidence,
-              'ir_code': code,
-            },
-          ),
-        );
+          if (earningMatch != null) {
+            results.add(ImportResult(
+              ticker: _extractTicker(earningMatch.group(2)!) != "OUTROS"
+                  ? _extractTicker(earningMatch.group(2)!)
+                  : earningMatch.group(1)!,
+              qty: 0,
+              price: _parseMoney(earningMatch.group(3)!),
+              assetType: 'DIVIDENDO',
+              type: 'DIV',
+              date: "Ano 2024",
+              broker: earningMatch.group(2)!.trim(),
+              cnpj: earningMatch.group(1)!,
+              isEarning: true,
+            ));
+          }
+        }
       }
 
       document.dispose();
-
-      if (results.isEmpty) {
-        throw Exception("Nenhum ativo identificado");
-      }
-
+      if (results.isEmpty) throw Exception("Nenhum dado encontrado. Verifique se o PDF tem texto selecionável.");
       return results;
     } catch (e) {
       document?.dispose();
-      throw Exception("Erro ao importar IRPF: $e");
+      throw Exception("Erro na lapidação: $e");
     }
   }
 
-  bool _isValidCode(String c) {
-    return [
-      '31',
-      '73',
-      '74',
-      '01',
-      '02',
-      '11',
-      '12',
-      '21',
-      '81',
-      '82',
-      '89',
-      '99'
-    ].contains(c);
-  }
+  // --- HELPERS DE PRECISÃO ---
 
-  double _parseMoney(String s) {
-    return double.tryParse(
-        s.replaceAll('.', '').replaceAll(',', '.')) ??
-        0.0;
-  }
+  double _parseMoney(String s) => double.tryParse(s.replaceAll('.', '').replaceAll(',', '.')) ?? 0.0;
 
   String _mapCodeToType(String c) {
-    if (c == '31') return 'ACAO';
-    if (['73', '74'].contains(c)) return 'FII';
-    if (c.startsWith('0') || c.startsWith('1')) return 'IMOVEL';
+    if (c == '31' || c == '01' || c == '03') return 'ACAO'; // 03/31 para ações/stocks
+    if (c == '73' || c == '74') return 'FII';
+    if (c == '16' || c == '11' || c == '12') return 'REAL_ESTATE';
+    if (c == '02') return 'VEHICLE';
     return 'OUTROS';
   }
 
   String _extractTicker(String s) {
-    final br =
-    RegExp(r'\b[A-Z]{4}\d{1,2}\b').firstMatch(s);
+    // Busca: 4 letras + número (PETR4) ou Tickers USA (3-4 letras: STAG, AVB)
+    final br = RegExp(r'\b([A-Z]{4}\d{1,2})\b').firstMatch(s);
     if (br != null) return br.group(0)!;
 
-    final us =
-    RegExp(r'\b[A-Z]{2,5}\b').firstMatch(s);
-    if (us != null) return us.group(0)!;
+    // Se tiver "TICKER:" ou "CÓDIGO:" escrito, pega o que vem depois
+    final label = RegExp(r'(?:CÓDIGO|TICKER|NEGOCIAÇÃO):\s?([A-Z]{2,5})').firstMatch(s);
+    if (label != null) return label.group(1)!;
 
     return "OUTROS";
   }
 
   double _extractQty(String s) {
-    final m = RegExp(
-        r'([\d\.,]+)\s?(AÇÕES|COTAS|QUOTAS|UNIDADES)',
-        caseSensitive: false)
-        .firstMatch(s);
-    return m != null ? _parseMoney(m.group(1)!) : 0.0;
+    // Pega números decimais antes de AÇÕES/COTAS (Ex: 16,32815 AÇÕES)
+    final m = RegExp(r'([\d\.,]{1,15})\s?(AÇÕES|COTAS|UNIDADES|SHARES)', caseSensitive: false).firstMatch(s);
+    if (m != null) return _parseMoney(m.group(1)!);
+    return 0.0;
   }
 
-  String _extractCNPJ(String s) {
-    return RegExp(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}')
-        .firstMatch(s)
-        ?.group(0) ??
-        "";
-  }
+  String _extractCNPJ(String s) => RegExp(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}').firstMatch(s)?.group(0) ?? "";
 
-  String _inferLocation(String s) {
-    if (s.contains("EXTERIOR") ||
-        s.contains("USA") ||
-        s.contains("ESTADOS UNIDOS")) {
-      return "EXTERIOR";
-    }
-    return "BR";
-  }
-
-  double _calculateConfidence({
-    required bool hasTicker,
-    required bool hasQty,
-    required bool hasCnpj,
-    required bool hasValue,
-    required bool validCode,
-  }) {
-    double score = 0.0;
-
-    if (validCode) score += 0.25;
-    if (hasValue) score += 0.25;
-    if (hasTicker) score += 0.20;
-    if (hasQty) score += 0.15;
-    if (hasCnpj) score += 0.15;
-
-    return score.clamp(0.0, 1.0);
-  }
+  String _inferLocation(String s) => (s.contains("ESTADOS UNIDOS") || s.contains("EXTERIOR")) ? "USA" : "BR";
 
   String _generateSlug(String s) {
-    final words = s
-        .replaceAll(RegExp(r'[^A-Z ]'), '')
-        .split(' ')
-        .where((w) => w.length > 3)
-        .toList();
-
-    if (words.length >= 2) {
-      return "${words[0]}_${words[1]}";
-    }
-
-    return "ATIVO_IRPF";
+    final words = s.split(' ').where((w) => w.length > 3 && !w.contains(RegExp(r'\d'))).toList();
+    if (words.length >= 2) return "${words[0]}_${words[1]}".toUpperCase();
+    return "ATIVO_IR";
   }
 }

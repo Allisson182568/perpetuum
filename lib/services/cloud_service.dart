@@ -308,4 +308,19 @@ class CloudService {
     final res = await _supabase.from('import_logs').select('id').eq('user_id', uid).eq('file_hash', h).maybeSingle();
     return res != null;
   }
+
+  Future<String?> getTickerByCnpj(String cnpj) async {
+    try {
+      final cleanCnpj = cnpj.replaceAll(RegExp(r'[^0-9]'), '');
+      final response = await _supabase
+          .from('asset_metadata')
+          .select('ticker')
+          .eq('cnpj', cleanCnpj)
+          .maybeSingle();
+
+      return response?['ticker'] as String?;
+    } catch (e) {
+      return null;
+    }
+  }
 }

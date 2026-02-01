@@ -20,3 +20,14 @@ entrypoint = "./functions/predict-dividends/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/predict-dividends/*.html" ]
+
+[functions.connect-b3]
+enabled = true
+verify_jwt = true
+import_map = "./functions/connect-b3/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/connect-b3/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/connect-b3/*.html" ]

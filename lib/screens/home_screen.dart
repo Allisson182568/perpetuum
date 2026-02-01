@@ -16,6 +16,7 @@ import '../../services/cloud_service.dart';
 import '../../services/dividend_service.dart';
 import '../../services/ai/portfolio_brain.dart';
 
+import '../import/strategies/pluggy_service.dart';
 import '../services/ai/AiEngineService.dart';
 import '../services/excel_generator_service.dart';
 import 'add_asset_financeiro_screen.dart';
@@ -26,6 +27,12 @@ import 'allocation_screen.dart';
 import 'dividends_screen.dart';
 import 'portfolio_auditor_screen.dart';
 import 'package:perpetuum/screens/profile_screen.dart';
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -1689,6 +1696,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _showImportOptions(BuildContext context) {
+    final _pluggyService = PluggyService();
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -1719,10 +1727,10 @@ class _HomeScreenState extends State<HomeScreen>
               const SizedBox(height: 24),
               _buildOptionTile(
                 context,
-                icon: Icons.description_outlined,
-                title: "Declaração de IR",
-                subtitle: "PDF oficial",
-                onTap: () => _navigateToImport(context, ImportType.irpf),
+                icon: Icons.account_balance_outlined, // Ícone que remete a instituição financeira
+                title: "Conectar B3",
+                subtitle: "Sincronização automática via B3",
+                onTap: () => _pluggyService.handleB3Connection(context),
               ),
               const SizedBox(height: 12),
               _buildOptionTile(
@@ -2045,7 +2053,37 @@ class _HomeScreenState extends State<HomeScreen>
   }
 }
 
-// --- NOVO WIDGET: BARRA DE PESQUISA INTELIGENTE (IA) ---
+// 1. Instância do cliente Supabase (adicione no início da classe _HomeScreenState)
+final supabase = Supabase.instance.client;
+
+// 2. Método principal de conexão que você chamou no onTap
+Future<void> _openPluggyConnect(BuildContext context, String connectUrl) async {
+  final Uri url = Uri.parse(connectUrl);
+
+  try {
+    if (kIsWeb) {
+      // COMPORTAMENTO WEB: Abre em nova aba para evitar erros de CORS/iFrame
+      await launchUrl(
+        url,
+        webOnlyWindowName: '_blank', // Força abertura em nova aba
+      );
+    } else {
+      // COMPORTAMENTO MOBILE: Abre no navegador externo ou Custom Tab
+      // Isso é mais estável para processos de login complexos
+      await launchUrl(
+        url,
+        mode: LaunchMode.externalApplication,
+      );
+    }
+  } catch (e) {
+    debugPrint("Erro ao abrir link: $e");
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Não foi possível abrir a tela de conexão.")),
+      );
+    }
+  }
+}// --- NOVO WIDGET: BARRA DE PESQUISA INTELIGENTE (IA) ---
 class AiSearchWidget extends StatefulWidget {
   const AiSearchWidget({Key? key}) : super(key: key);
 
