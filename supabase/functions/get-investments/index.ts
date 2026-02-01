@@ -6,60 +6,42 @@ const corsHeaders = {
 }
 
 serve(async (req) => {
-  // 1. CORS: Permite o Flutter conectar
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
-    // 2. Recebe o ID da conexão (itemId) vindo do Flutter
-    const { itemId } = await req.json().catch(() => ({}))
-
-    if (!itemId) {
-      throw new Error("itemId é obrigatório para buscar investimentos")
-    }
-
+    const { itemId } = await req.json()
     const clientId = Deno.env.get('PLUGGY_CLIENT_ID')
     const clientSecret = Deno.env.get('PLUGGY_CLIENT_SECRET')
 
-    // 3. Autentica na Pluggy (Pega a API Key)
+    // 1. Auth na Pluggy
     const authRes = await fetch('https://api.pluggy.ai/auth', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientId, clientSecret }),
     })
-
     const authData = await authRes.json()
     const apiKey = authData.apiKey
 
-    // 4. BUSCA OS INVESTIMENTOS (O Grande Momento)
-    // Buscamos apenas dessa conexão específica (itemId)
-    const investRes = await fetch(`https://api.pluggy.ai/investments?itemId=${itemId}`, {
-      method: 'GET',
-      headers: {
-        'X-API-KEY': apiKey,
-        'Accept': 'application/json'
-      }
+    // 2. Busca Investimentos
+    const invRes = await fetch(`https://api.pluggy.ai/investments?itemId=${itemId}`, {
+      headers: { 'X-API-KEY': apiKey }
     })
+    const invData = await invRes.json()
 
-    const investData = await investRes.json()
+    // 3. Busca Saldo de Conta (Para pegar o Caixa/Saldo disponível)
+    const accRes = await fetch(`https://api.pluggy.ai/accounts?itemId=${itemId}`, {
+      headers: { 'X-API-KEY': apiKey }
+    })
+    const accData = await accRes.json()
 
-    // 5. Retorna a lista de ativos para o Flutter
-    return new Response(
-      JSON.stringify(investData),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 200
-      },
-    )
+    return new Response(JSON.stringify({
+      investments: invData.results || [],
+      accounts: accData.results || []
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } })
 
   } catch (error) {
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 400
-      }
-    )
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 400, headers: corsHeaders
+    })
   }
 })

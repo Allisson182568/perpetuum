@@ -16,6 +16,7 @@ import '../../services/cloud_service.dart';
 import '../../services/dividend_service.dart';
 import '../../services/ai/portfolio_brain.dart';
 
+import '../import/movimentacao_page.dart';
 import '../import/strategies/pluggy_service.dart';
 import '../services/ai/AiEngineService.dart';
 import '../services/excel_generator_service.dart';
@@ -106,6 +107,8 @@ class _HomeScreenState extends State<HomeScreen>
         );
 
     _initSetup();
+
+    _sincronizarEBuscarHome();
   }
 
   Future<void> _initSetup() async {
@@ -591,6 +594,8 @@ class _HomeScreenState extends State<HomeScreen>
               _buildAuditorCallout(),
               const SizedBox(height: 16),
               _buildActionButtons(context),
+              const SizedBox(height: 16),
+              _buildMovementsButton(),
             ],
           ),
         ),
@@ -629,6 +634,8 @@ class _HomeScreenState extends State<HomeScreen>
                   _buildAuditorCallout(),
                   const SizedBox(height: 20),
                   _buildActionButtons(context),
+                  const SizedBox(height: 20),
+                  _buildMovementsButton(),
                 ],
               ),
             ),
@@ -1791,12 +1798,12 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _buildOptionTile(
-      BuildContext context, {
+      BuildContext context, { // Chave aberta aqui
         required IconData icon,
         required String title,
         required String subtitle,
         required VoidCallback onTap,
-      }) {
+      }) { // Chave fechada aqui
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
@@ -1814,14 +1821,8 @@ class _HomeScreenState extends State<HomeScreen>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
-                    style: AppTheme.titleStyle.copyWith(fontSize: 15),
-                  ),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(color: Colors.white54, fontSize: 12),
-                  ),
+                  Text(title, style: AppTheme.titleStyle.copyWith(fontSize: 15)),
+                  Text(subtitle, style: const TextStyle(color: Colors.white54, fontSize: 12)),
                 ],
               ),
             ),
@@ -2054,7 +2055,158 @@ class _HomeScreenState extends State<HomeScreen>
       ),
     );
   }
-}
+
+  Widget _buildMovementsButton() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12), // Espaço entre a fileira de 3 e este botão
+      child: InkWell(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const MovimentacoesPage()),
+          );
+        },
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          width: double.infinity, // Ocupa a largura total dos 3 acima
+          height: 90, // Mesma altura do _buildSquareButton
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.05), // Estilo idêntico ao botão não-primário
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.receipt_long_rounded, color: Colors.white, size: 28),
+              const SizedBox(height: 8),
+              const Text(
+                "Minhas Movimentações",
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sincronizarEBuscarHome() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    try {
+      debugPrint("🔄 PASSO 1: Verificando novas conexões na Pluggy...");
+
+      // 1. Tenta buscar novidades na nuvem (mas não dependemos só disso)
+      try {
+        final response = await Supabase.instance.client.functions.invoke(
+          'sync-user-connections',
+          body: {'clientUserId': user.id},
+        );
+
+        final dynamic data = response.data;
+        if (data is List && data.isNotEmpty) {
+          for (var item in data) {
+            // Tenta salvar, mas silencia o erro se já existir
+            try {
+              await Supabase.instance.client.from('user_connections').upsert({
+                'user_id': user.id,
+                'item_id': item['id'],
+                'institution_name': item['connector']['name'],
+              }, onConflict: 'item_id');
+            } catch (_) {} // Se der erro de duplicidade, segue o jogo!
+          }
+        }
+      } catch (e) {
+        debugPrint("⚠️ Aviso no sync (não crítico): $e");
+      }
+
+      // 🔄 PASSO 2: O PULO DO GATO
+      // Agora buscamos no NOSSO banco quais conexões existem e atualizamos todas.
+      // Isso resolve o problema da lista vazia e do erro de duplicidade travando tudo.
+
+      final dbConexoes = await Supabase.instance.client
+          .from('user_connections')
+          .select('*');
+
+      if (dbConexoes.isEmpty) {
+        debugPrint("❌ Nenhuma conexão salva no banco local ainda.");
+        return;
+      }
+
+      debugPrint("📥 PASSO 3: Baixando saldo para ${dbConexoes.length} conexões...");
+
+      for (var conn in dbConexoes) {
+        final String itemId = conn['item_id'];
+        final String institution = conn['institution_name'];
+
+        try {
+          final invResponse = await Supabase.instance.client.functions.invoke(
+            'get-investments',
+            body: {'itemId': itemId},
+          );
+
+          final invData = invResponse.data;
+          final List investments = invData['investments'] ?? [];
+          final List accounts = invData['accounts'] ?? [];
+
+          debugPrint("✅ Recebido de $institution: ${investments.length} ativos, ${accounts.length} contas.");
+
+          // Salva Ativos
+          for (var inv in investments) {
+            // Cria um ID único para o ativo para evitar duplicidade
+            final assetId = "${inv['id']}-${user.id}";
+
+            await Supabase.instance.client.from('assets').upsert({
+              // Se sua tabela assets tiver ID automático, remova a linha 'id' abaixo
+              // e use outra estratégia de unicidade se necessário.
+              // Por enquanto, vamos confiar no upsert normal:
+              'user_id': user.id,
+              'ticker': inv['code'] ?? inv['name'],
+              'name': inv['name'],
+              'quantity': inv['quantity'] ?? 1,
+              'value': inv['balance'] ?? inv['value'] ?? 0,
+              'type': inv['type'] ?? 'OUTROS',
+              'institution_name': institution,
+              'updated_at': DateTime.now().toIso8601String(),
+            });
+          }
+
+          // Salva Saldo em Conta (Caixa)
+          for (var acc in accounts) {
+            final balance = (acc['balance'] as num?)?.toDouble() ?? 0.0;
+            if (balance > 0) {
+              await Supabase.instance.client.from('assets').upsert({
+                'user_id': user.id,
+                'ticker': 'CAIXA', // Identificador fixo para não duplicar saldo
+                'name': 'Saldo em Conta - $institution',
+                'quantity': 1,
+                'value': balance,
+                'type': 'CAIXA',
+                'institution_name': institution,
+                'updated_at': DateTime.now().toIso8601String(),
+              }); // Adicione onConflict se tiver constraint em (user_id, ticker)
+            }
+          }
+
+        } catch (innerError) {
+          debugPrint("❌ Erro ao baixar dados de $institution: $innerError");
+        }
+      }
+
+      // 4. Atualiza a tela
+      debugPrint("🏁 Tudo pronto! Atualizando interface...");
+      _loadData();
+
+    } catch (e) {
+      debugPrint("Erro fatal no processo: $e");
+    }
+  }}
 
 // 1. Instância do cliente Supabase (adicione no início da classe _HomeScreenState)
 final supabase = Supabase.instance.client;
@@ -2281,5 +2433,8 @@ class _AiSearchWidgetState extends State<AiSearchWidget> {
       ),
     );
   }
+  // ... outros métodos anteriores ...
 
-}
+// _buildOptionTile(...) { ... }
+
+} // ESTA É A ÚLTIMA CHAVE DO ARQUIVO (Fecha o _HomeScreenState)

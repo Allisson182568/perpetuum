@@ -32,7 +32,7 @@ class PluggyService {
         MaterialPageRoute(
           builder: (context) => PluggyConnectUniversal(
             token: token,
-            withSandbox: true, // Deixe true para testar com dados fakes
+            withSandbox: false, // Deixe true para testar com dados fakes
           ),
         ),
       );
